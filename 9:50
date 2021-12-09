@@ -1,0 +1,175 @@
+from typing import Dict, List, Tuple
+import re
+
+Acode = './assembly_code.asm'
+
+global ERROR
+LC = 0
+REGISTERS = {'r1': 1, 'r2': 2, 'r3': 3, }
+DECLARATIVES = {'dcn': (1, 1), 'dst': (2, 1), }
+DIRECTIVES = { 'begin': (1, 1), 'stop': (2, 2), 'orgin': (3, 3), } | DECLARATIVES
+DATA_TRANSFER_INST = {'mvm': (2, 3), 'mvr': (1, 2)}
+IMPERATIVE_INST = {'rd': (4, 2), 'ad': (3, 2), 'sb': (5, 2), 'ml': (7, 2), 'jp': (6, 3), }
+
+
+# The set of valid mnemonics - MOT
+MOT = IMPERATIVE_INST  | DATA_TRANSFER_INST
+ERROR = False
+
+
+class Pass1:
+    def __init__(self, label: str = "", mnemonic: str = "", operand1: str = "", operand2: str = "",
+                    inst_type: str = 'mnemonic', op1_type='', op2_type='', *, line: int = -1, _LC: int = -1):
+        self.label = label
+        self.mnemonic = mnemonic
+        self.operand1 = operand1
+        self.operand2 = operand2
+
+        self.instruction_type = inst_type
+        self.operand1_type = op1_type
+        self.operand2_type = op2_type
+        self.line = line  
+        self.LC = _LC 
+
+    def __repr__(self) -> str:
+        return f'{self.LC}\t{self.label}\t{self.mnemonic}\t\t{self.operand1}\t\t{self.operand2}\t\t'
+
+    def ic_display(self) -> str:
+        return f'{self.LC}\t{self.label}\t{self.mnemonic}\t\t{self.operand1}\t\t{self.operand2}\t\t'
+           
+
+
+instructions: List[Pass1] = []
+
+labels: List[Tuple[str, int]] = []
+unused: Dict[str, int] = {}
+
+label_names = lambda lab: set(lab[0] for lab in labels)
+
+
+def parse(inst: str, line: int) -> Pass1:
+    global ERROR, LC, literal_count
+    label, mnemo, operand1, operand2, inst_type = '', '', '', '', 'mnemonic'
+    parts = re.split(r'\s+', inst)
+
+    # if first component is a label
+    if parts[0][-1] == ':':
+        label = parts[0][:-1]
+
+        # if label is found then remove from unused
+        if label in unused:
+            del unused[label]
+
+        # if label already declared 
+        if label in label_names(labels):
+            ERROR = True
+            print(f'Redeclared label on line {line}')
+            return None
+
+        if parts[1] == 'dcn':
+            labels.append([label, LC, parts[2]])
+        else:
+            labels.append([label, LC, '-'])
+        parts = parts[1:]
+       
+    mnemo = parts[0].lower()
+
+    # check for mnemonics if present in mnemonic table
+    if parts[0].lower() in MOT:
+        size = MOT[mnemo][1]
+
+
+    # If first operand doesn't exist
+    if len(parts) < 2:
+        return Pass1(label, mnemo, operand1, operand2, _LC=LC, inst_type=inst_type)
+
+    op1 = parts[1]
+
+    # The comma is optional so remove it
+    if op1[-1] == ',':op1 = op1[:-1]
+    operand1 = op1
+
+
+    if len(parts) > 2:
+        operand2 = parts[2]
+        if mnemo in DATA_TRANSFER_INST | IMPERATIVE_INST:
+            if parts[2] not in label_names(labels):
+                unused[parts[2]] = (line, LC)    
+
+    ins = Pass1(label, mnemo, operand1, operand2, inst_type=inst_type, _LC=LC, line=line)
+
+    # incrementing LC 
+    if 'IS' in inst_type:
+        if mnemo == 'mvr':
+            LC += 2
+        elif mnemo == 'mvm':
+            LC += 3
+        elif mnemo == 'jp':
+            LC += 3
+        else:
+            LC += 2
+    elif mnemo in DECLARATIVES:
+        if mnemo == 'dcn':
+            LC += 1
+        elif mnemo == 'dst':
+            LC += int(op1) 
+
+    return ins
+
+
+if __name__ == '__main__':
+    i = 0
+    f = open(f'{Acode}')
+    line = [l for l in re.split(r'\s+', f.readline()) if len(l) > 0]
+
+    if line[0] == 'start':
+        i = 1
+        inst_type = ('AD ' + str(DIRECTIVES['begin'][0]))
+        # after splitting start if there is constant then update lc
+        if len(line) == 2:
+            LC = int(line[1])
+            instructions.append(Pass1(mnemonic="begin", operand1=LC, inst_type=inst_type, _LC=LC, line=i))
+        else:
+            instructions.append(Pass1(mnemonic="begin", inst_type=inst_type, _LC=LC, line=i))
+
+    while line := f.readline():
+        line = line.strip()
+        i += 1
+        if len(line) > 0:
+            ins = parse(line, i)
+            if not ins:
+                continue
+
+            instructions.append(ins)
+
+    label_dict = {lab[0]: lab[1] for lab in labels}
+    label_name_list = [lab[0] for lab in labels]
+
+
+    f.close()
+
+    if unused:
+        for back in unused:
+            print(f'label `{back}` is referred to but not declared', end=' ')
+
+    elif not ERROR:
+        print("\n+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+\n")
+        print("Symbol Table:\n")
+        print("Index\tLabel Name\tAddress\t\tValue")
+        for index, (key, lc, val) in enumerate(labels):
+            print(f"{index+1}\t{key}\t\t{lc}\t\t{val}")
+        print("\n+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+\n")
+        print("\nLC Processing:\n")
+        print('LC\t\t\t\tCode\n')
+        for ins in instructions:
+            print(ins.ic_display())
+        print("\n+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+\n")
+       
+        
+       
+
+# Error Corrections: 
+# 1. Duplicate labels - redeclared label
+# 2. Variables/Symbols referred but not declared
+# 3. Mnemonic, registers have to be valid
+   
